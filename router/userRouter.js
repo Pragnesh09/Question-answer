@@ -3,15 +3,21 @@ const router = express.Router();
 import {
   createUser,
   createQuestion,
-  createOption,
+  updateQuestion,
+  deleteQuestion,
+  listQuestion,
   storeResponse,
   finalReport,
 } from "../controller/userController.js";
 
 router.post("/createUser", createUser);
+
 router.post("/createQuestion", createQuestion);
-router.post("/createOption", createOption);
+router.patch("/updateQuestion/:id", updateQuestion);
+router.delete("/deleteQuestion/:id", deleteQuestion);
+router.get("/listQuestion", listQuestion);
+
 router.post("/storeResponse", storeResponse);
-router.get("/finalReport", finalReport);
+router.get("/finalReport/:id", finalReport);
 
 export default router;
