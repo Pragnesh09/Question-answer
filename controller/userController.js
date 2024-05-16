@@ -138,17 +138,23 @@ const updateQuestion = async (req, res) => {
     // Update existing options and insert new options
     for (const option of options) {
       if (option.option_id) {
-        // Update existing option
-        if (existingOptionIds.includes(option.option_id)) {
-          await client.query(
-            "UPDATE options SET option_text = $1 WHERE option_id = $2",
-            [option.option_text, option.option_id]
-          );
+        // Check if the option_id exists for the specified question
+        if (!existingOptionIds.includes(option.option_id)) {
+          return res.status(400).json({
+            success: false,
+            message: `OptionId dose not exist.`,
+          });
         }
+
+        // Update existing option for the specified question
+        await client.query(
+          "UPDATE options SET option_text = $1 WHERE option_id = $2 AND question_id = $3",
+          [option.option_text, option.option_id, req.params.id]
+        );
       } else {
         // Store new option
         await client.query(
-          "INSERT INTO options (option_text , question_id) VALUES ($1,$2)",
+          "INSERT INTO options (option_text, question_id) VALUES ($1, $2)",
           [option.option_text, req.params.id]
         );
       }
@@ -161,19 +167,19 @@ const updateQuestion = async (req, res) => {
     for (const optionId of optionsToDelete) {
       await client.query(
         `UPDATE options
-      SET isDeleted = true
-      WHERE option_id = $1;`,
-        [optionId]
+        SET isDeleted = true
+        WHERE option_id = $1 AND question_id = $2;`,
+        [optionId, req.params.id]
       );
     }
 
     res.status(200).json({
       success: true,
-      message: "Question updates Successfully.",
+      message: "Question updated successfully.",
     });
   } catch (error) {
     console.log("Error >>", error);
-    res.status(400).json({ success: false, message: error });
+    res.status(400).json({ success: false, message: error.message });
   }
 };
 
@@ -287,6 +293,20 @@ const submitResponse = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "Question not found." });
+    }
+
+    for (const optionId of priority) {
+      const optionExists = await client.query(
+        `SELECT * FROM options WHERE option_id = $1 AND question_id = $2`,
+        [optionId, questionId]
+      );
+
+      if (optionExists.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: `OptionId dose not exist.`,
+        });
+      }
     }
 
     for (let i = 0; i < priority.length; i++) {
