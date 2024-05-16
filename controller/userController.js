@@ -329,8 +329,8 @@ const submitResponse = async (req, res) => {
       message: "User response store Successfully.",
     });
   } catch (error) {
-    console.log(error);
-    res.status(400).json({ message: "Something went wrong." });
+    console.log("error >>", error);
+    res.status(400).json({ success: false, message: "Something went wrong." });
   }
 };
 
