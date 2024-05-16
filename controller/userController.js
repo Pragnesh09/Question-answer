@@ -70,12 +70,6 @@ const createQuestion = async (req, res) => {
         .json({ success: false, message: "Question already exist." });
     }
 
-    if (!options || !Array.isArray(options) || options.length < 2) {
-      return res
-        .status(400)
-        .json({ success: false, message: "atleast two options required." });
-    }
-
     // Insert question
     const questionResponse = await client.query(
       `INSERT INTO questions(question_text) VALUES($1) RETURNING *`,
@@ -164,12 +158,22 @@ const updateQuestion = async (req, res) => {
     const optionsToDelete = existingOptionIds.filter(
       (optionId) => !options.some((option) => option.option_id === optionId)
     );
+    console.log("🚀 ~ updateQuestion ~ optionsToDelete:", optionsToDelete);
     for (const optionId of optionsToDelete) {
       await client.query(
         `UPDATE options
         SET isDeleted = true
         WHERE option_id = $1 AND question_id = $2;`,
         [optionId, req.params.id]
+      );
+
+      await client.query(
+        `
+        UPDATE user_responses
+        SET isDeleted = true
+        WHERE option_id = $1
+        `,
+        [optionId]
       );
     }
 
@@ -338,7 +342,7 @@ const finalReport = async (req, res) => {
       SELECT q.question_id, string_agg(o.option_text, ', ') AS option_text, array_agg(o.option_id) AS option_ids
       FROM questions AS q
       LEFT JOIN options AS o ON q.question_id = o.question_id
-      WHERE q.isDeleted = false
+      WHERE q.isDeleted = false AND o.isDeleted = false
       GROUP BY q.question_id;
       `
     );
@@ -359,7 +363,7 @@ const finalReport = async (req, res) => {
         SELECT *
         FROM user_responses
         WHERE question_id = $1
-        AND priority = 1;
+        AND priority = 1 AND isDeleted = false;
         `,
         [questionId]
       );
