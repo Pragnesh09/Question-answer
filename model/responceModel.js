@@ -6,7 +6,8 @@ export const responseModel = async (client) => {
             question_id INT REFERENCES questions(question_id),
             option_id INT REFERENCES options(option_id),
             user_id INT,
-            priority INT
+            priority INT,
+            isDeleted BOOLEAN DEFAULT false
       );
       `;
     await client.query(query);

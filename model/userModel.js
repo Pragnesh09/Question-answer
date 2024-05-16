@@ -3,7 +3,7 @@ export const userModel = async (client) => {
     const query = `
       CREATE TABLE IF NOT EXISTS users (
         user_id SERIAL PRIMARY KEY,
-        username VARCHAR(255) UNIQUE NOT NULL,
+        userName VARCHAR(255) UNIQUE NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL
       )

@@ -3,7 +3,8 @@ export const questionModel = async (client) => {
     const query = `
         CREATE TABLE IF NOT EXISTS questions (
             question_id SERIAL PRIMARY KEY,
-            question_text TEXT
+            question_text TEXT,
+            isDeleted BOOLEAN DEFAULT false
         )
       `;
     await client.query(query);

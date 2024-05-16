@@ -1,61 +1,79 @@
 import { client } from "../database/database.js";
+import { validationResult } from "express-validator";
 
 // Create a new user
 const createUser = async (req, res) => {
   try {
-    const { username, email, password } = req.body;
-
-    // Validate input
-    if (!username || !email || !password) {
-      return res.status(400).json({ message: "All fields are required." });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array() });
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    // Validate email format
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ message: "Invalid email format." });
-    }
+    const { userName, email, password } = req.body;
 
-    // Check if username and email are unique
+    // Check if userName and email are unique
     const existingUser = await client.query(
       `SELECT * FROM users WHERE username = $1 OR email = $2`,
-      [username, email]
+      [userName, email]
     );
+
     if (existingUser.rows.length > 0) {
-      return res
-        .status(400)
-        .json({ message: "Username or email already exists." });
+      if (existingUser.rows[0].username === userName) {
+        return res
+          .status(400)
+          .json({ success: false, message: "userName already exists." });
+      } else if (existingUser.rows[0].email === email) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Email already exists." });
+      }
     }
 
     // Insert user into database
     const user = await client.query(
       `INSERT INTO users(username,email,password) VALUES($1,$2,$3) RETURNING * `,
-      [username, email, password]
+      [userName, email, password]
     );
 
-    res
-      .status(200)
-      .json({ user: user.rows[0], message: "User Insert Successfully." });
+    res.status(200).json({
+      success: true,
+      message: "User Created.",
+      Data: user.rows[0],
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    console.error("Error >>", error);
+    res.status(400).json({
+      success: false,
+      message: "Something went wrong.",
+      data: error,
+    });
   }
 };
 
 const createQuestion = async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array() });
+    }
+
     const { question, options } = req.body;
 
-    // Validate input
-    if (
-      !question ||
-      !options ||
-      !Array.isArray(options) ||
-      options.length < 2
-    ) {
+    const existingQuestion = await client.query(
+      `SELECT * FROM questions WHERE question_text = $1 `,
+      [question]
+    );
+
+    if (existingQuestion.rows.length > 0) {
       return res
         .status(400)
-        .json({ message: "Question and at least two options are required." });
+        .json({ success: false, message: "Question already exist." });
+    }
+
+    if (!options || !Array.isArray(options) || options.length < 2) {
+      return res
+        .status(400)
+        .json({ success: false, message: "atleast two options required." });
     }
 
     // Insert question
@@ -66,36 +84,39 @@ const createQuestion = async (req, res) => {
     const questionId = questionResponse.rows[0].question_id;
 
     // Insert options
-    const optionResponses = await Promise.all(
-      options.map((optionText) =>
-        client.query(
-          `INSERT INTO options(question_id, option_text) VALUES($1, $2) RETURNING *`,
-          [questionId, optionText]
-        )
+    options.map((optionText) =>
+      client.query(
+        `INSERT INTO options(question_id, option_text) VALUES($1, $2)`,
+        [questionId, optionText]
       )
     );
 
     res.status(200).json({
-      message: "Question Added Successfully.",
+      success: true,
+      message: "Question add successfully.",
     });
   } catch (error) {
-    console.error(error);
-    res.status(400).json({ message: "Something went wrong." });
+    console.error("Error >>", error);
+    res.status(400).json({
+      success: false,
+      message: "Something went wrong.",
+      data: error,
+    });
   }
 };
 
 const updateQuestion = async (req, res) => {
   try {
-    const { question_text, options } = req.body;
-
-    // Check if question ID is provided and valid
-    if (!req.params.id || isNaN(parseInt(req.params.id))) {
-      return res.status(400).json({ message: "Invalid question ID." });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array() });
     }
+
+    const { question_text, options } = req.body;
 
     // Check if question exists
     const questionExists = await client.query(
-      `SELECT * FROM questions WHERE question_id = $1`,
+      `SELECT * FROM questions WHERE question_id = $1 AND isDeleted = false`,
       [req.params.id]
     );
     if (questionExists.rows.length === 0) {
@@ -113,8 +134,8 @@ const updateQuestion = async (req, res) => {
       [req.params.id]
     );
     const existingOptionIds = existingOptions.rows.map((row) => row.option_id);
-    console.log("🚀 ~ updateQuestion ~ existingOptionIds:", existingOptionIds);
 
+    // Update existing options and insert new options
     for (const option of options) {
       if (option.option_id) {
         // Update existing option
@@ -133,23 +154,39 @@ const updateQuestion = async (req, res) => {
       }
     }
 
-    res.send("Hello");
+    // Delete options not present in the payload
+    const optionsToDelete = existingOptionIds.filter(
+      (optionId) => !options.some((option) => option.option_id === optionId)
+    );
+    for (const optionId of optionsToDelete) {
+      await client.query(
+        `UPDATE options
+      SET isDeleted = true
+      WHERE option_id = $1;`,
+        [optionId]
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Question updates Successfully.",
+    });
   } catch (error) {
-    console.log(error);
-    res.status(400).json({ message: "Something went wrong." });
+    console.log("Error >>", error);
+    res.status(400).json({ success: false, message: error });
   }
 };
 
 const deleteQuestion = async (req, res) => {
   try {
-    // Check if question ID is provided and valid
-    if (!req.params.id || isNaN(parseInt(req.params.id))) {
-      return res.status(400).json({ message: "Invalid question ID." });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array() });
     }
 
     // Check if question exists
     const questionExists = await client.query(
-      `SELECT * FROM questions WHERE question_id = $1`,
+      `SELECT * FROM questions WHERE question_id = $1 AND isDeleted = false`,
       [req.params.id]
     );
 
@@ -158,21 +195,33 @@ const deleteQuestion = async (req, res) => {
     }
 
     // Delete options
-    await client.query(`DELETE FROM options WHERE question_id = $1`, [
-      req.params.id,
-    ]);
+    await client.query(
+      `UPDATE options
+      SET isDeleted = true
+      WHERE question_id = $1;`,
+      [req.params.id]
+    );
 
     // Then delete the question
-    await client.query(`DELETE FROM questions WHERE question_id = $1`, [
-      req.params.id,
-    ]);
+    await client.query(
+      `UPDATE questions
+      SET isDeleted = true
+      WHERE question_id = $1;`,
+      [req.params.id]
+    );
+
+    //Then delete the question response
+    await client.query(
+      `UPDATE user_responses SET isDeleted = true WHERE question_id = $1;`,
+      [req.params.id]
+    );
 
     res
       .status(200)
-      .json({ message: "Question and options deleted successfully." });
+      .json({ success: true, message: "Question deleted successfully." });
   } catch (error) {
-    console.log(error);
-    res.status(400).json({ message: "Something went wrong." });
+    console.log("Error >>", error);
+    res.status(400).json({ success: false, message: error });
   }
 };
 
@@ -181,7 +230,9 @@ const listQuestion = async (req, res) => {
     const result = await client.query(`
       SELECT q.question_id, q.question_text, o.option_id , o.option_text
       FROM questions q
-      LEFT JOIN options o ON q.question_id = o.question_id
+      LEFT JOIN options o ON q.question_id = o.question_id AND o.isDeleted = false
+      WHERE q.isDeleted = false
+      ORDER BY q.question_id ASC
     `);
 
     const questionGroup = [];
@@ -207,32 +258,35 @@ const listQuestion = async (req, res) => {
     });
 
     res.status(200).json({
-      message: "Question and options listed successfully.",
-      questionGroup: questionGroup,
+      success: true,
+      message: "Questions listed successfully.",
+      data: questionGroup,
     });
   } catch (error) {
-    console.log(error);
-    res.status(400).json({ message: "Something went wrong." });
+    console.log("Error >>", error);
+    res.status(400).json({ success: false, message: error });
   }
 };
 
-const storeResponse = async (req, res) => {
+const submitResponse = async (req, res) => {
   try {
-    const { questionId, userId, priority } = req.body;
-
-    // Check if question ID is provided and valid
-    if (!questionId || isNaN(parseInt(questionId))) {
-      return res.status(400).json({ message: "Invalid question ID." });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array() });
     }
+
+    const { questionId, userId, priority } = req.body;
 
     // Check if question exists
     const questionExists = await client.query(
-      `SELECT * FROM questions WHERE question_id = $1`,
+      `SELECT * FROM questions WHERE question_id = $1 AND isDeleted = false`,
       [questionId]
     );
 
     if (questionExists.rows.length === 0) {
-      return res.status(404).json({ message: "Question not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Question not found." });
     }
 
     for (let i = 0; i < priority.length; i++) {
@@ -247,6 +301,7 @@ const storeResponse = async (req, res) => {
     }
 
     res.status(200).json({
+      success: true,
       message: "User response store Successfully.",
     });
   } catch (error) {
@@ -257,41 +312,79 @@ const storeResponse = async (req, res) => {
 
 const finalReport = async (req, res) => {
   try {
-    const questionId = req.params.id;
-    const responses = await client.query(
+    // Fetch all questions and their options
+    const questionsResult = await client.query(
       `
-      SELECT *
-      FROM user_responses
-      WHERE question_id = $1
-      AND priority = 1;
-    `,
-      [questionId]
+      SELECT q.question_id, string_agg(o.option_text, ', ') AS option_text, array_agg(o.option_id) AS option_ids
+      FROM questions AS q
+      LEFT JOIN options AS o ON q.question_id = o.question_id
+      WHERE q.isDeleted = false
+      GROUP BY q.question_id;
+      `
     );
 
-    const totalCount = responses.rows.length;
-    const optionCounts = {};
-    responses.rows.forEach((row) => {
-      const optionId = row.option_id;
-      optionCounts[optionId] = (optionCounts[optionId] || 0) + 1;
-    });
+    const questions = questionsResult.rows;
 
-    console.log("🚀 ~ finalReport ~ optionCounts:", optionCounts);
+    const reports = [];
 
-    const optionPercentages = Object.entries(optionCounts).map(
-      ([optionId, count]) => ({
+    // Iterate through each question
+    for (const question of questions) {
+      const questionId = question.question_id;
+      const optionTexts = question.option_text.split(", ");
+      const optionIds = question.option_ids.map((id) => parseInt(id)); // Convert option_ids to integers
+
+      // Fetch responses for the current question
+      const responsesResult = await client.query(
+        `
+        SELECT *
+        FROM user_responses
+        WHERE question_id = $1
+        AND priority = 1;
+        `,
+        [questionId]
+      );
+
+      const responses = responsesResult.rows;
+
+      // Total number of users who responded to this question
+      const totalCount = responses.length;
+
+      // Create a map to store the count of each option
+      const optionCounts = {};
+
+      // Calculate the count of each option
+      responses.forEach((row) => {
+        const optionId = row.option_id;
+        optionCounts[optionId] = (optionCounts[optionId] || 0) + 1;
+      });
+
+      // Calculate percentage ratios for each option
+      const optionPercentages = optionIds.map((optionId, index) => ({
         option_id: optionId,
-        percentage: (count / totalCount) * 100,
-      })
-    );
-    console.log("🚀 ~ finalReport ~ optionPercentages:", optionPercentages);
+        option_text: optionTexts[index],
+        userCount: optionCounts[optionId] || 0,
+        percentage:
+          totalCount > 0
+            ? ((optionCounts[optionId] || 0) / totalCount) * 100
+            : 0,
+      }));
+
+      // Push report for the current question to the reports array
+      reports.push({
+        questionId: questionId,
+        totalUserCount: totalCount,
+        option_percentages: optionPercentages,
+      });
+    }
 
     res.status(200).json({
-      option_percentages: optionPercentages,
-      message: "Report listed..",
+      success: true,
+      message: "Reports listed successfully.",
+      reports: reports,
     });
   } catch (error) {
-    console.log(error);
-    res.status(400).json({ message: "Something went wrong." });
+    console.log("error >>", error);
+    res.status(400).json({ success: false, message: error.message });
   }
 };
 
@@ -301,6 +394,6 @@ export {
   updateQuestion,
   deleteQuestion,
   listQuestion,
-  storeResponse,
+  submitResponse,
   finalReport,
 };

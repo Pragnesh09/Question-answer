@@ -4,7 +4,8 @@ export const optionModel = async (client) => {
       CREATE TABLE IF NOT EXISTS options (
         option_id SERIAL PRIMARY KEY,
         question_id INT REFERENCES questions(question_id),
-        option_text TEXT
+        option_text TEXT,
+        isDeleted BOOLEAN DEFAULT false
     );
     `;
     await client.query(query);
