@@ -158,7 +158,6 @@ const updateQuestion = async (req, res) => {
     const optionsToDelete = existingOptionIds.filter(
       (optionId) => !options.some((option) => option.option_id === optionId)
     );
-    console.log("🚀 ~ updateQuestion ~ optionsToDelete:", optionsToDelete);
     for (const optionId of optionsToDelete) {
       await client.query(
         `UPDATE options
@@ -404,7 +403,7 @@ const finalReport = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Reports listed successfully.",
-      reports: reports,
+      Data: reports,
     });
   } catch (error) {
     console.log("error >>", error);
