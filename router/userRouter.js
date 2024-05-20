@@ -63,6 +63,15 @@ router.patch(
     body("options")
       .isArray({ min: 2 })
       .withMessage("At least two options are required."),
+    body("options.*.option_id")
+      .optional()
+      .isNumeric()
+      .withMessage("Question ID must be numeric."),
+    body("options.*.option_text")
+      .notEmpty()
+      .withMessage("Option text is required.")
+      .isString()
+      .withMessage("Option text must be a string."),
   ],
   updateQuestion
 );

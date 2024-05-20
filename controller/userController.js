@@ -6,7 +6,12 @@ const createUser = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: errors.array() });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: errors.array().map((error) => error.msg),
+        });
     }
 
     const { userName, email, password } = req.body;
@@ -42,11 +47,7 @@ const createUser = async (req, res) => {
     });
   } catch (error) {
     console.error("Error >>", error);
-    res.status(400).json({
-      success: false,
-      message: "Something went wrong.",
-      data: error,
-    });
+    res.status(400).json({ success: false, message: "Something went wrong." });
   }
 };
 
@@ -91,11 +92,7 @@ const createQuestion = async (req, res) => {
     });
   } catch (error) {
     console.error("Error >>", error);
-    res.status(400).json({
-      success: false,
-      message: "Something went wrong.",
-      data: error,
-    });
+    res.status(400).json({ success: false, message: "Something went wrong." });
   }
 };
 
@@ -117,64 +114,91 @@ const updateQuestion = async (req, res) => {
       return res.status(404).json({ message: "Question not found." });
     }
 
+    const { rows } = await client.query(
+      "SELECT array_agg(option_id) AS option_ids FROM options WHERE question_id = $1 AND isDeleted = false  ",
+      [req.params.id]
+    );
+
+    const existingOptionIds = rows[0].option_ids || [];
+
+    const invalidOptions = options.filter(
+      (option) =>
+        (option.option_id && !existingOptionIds.includes(option.option_id)) ||
+        (option.option_id === 0 && !existingOptionIds.includes(0))
+    );
+
+    if (invalidOptions.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Option not found.",
+      });
+    }
+
+    // Filter out undefined or null option_id values
+    const filteredOptions = options.filter(
+      (option) => option.option_id !== undefined && option.option_id !== null
+    );
+
+    // Constructing the SET clause
+    const setClause = filteredOptions
+      .map((option) => {
+        return `
+          WHEN option_id = ${option.option_id} THEN '${option.option_text}'`;
+      })
+      .join(" ");
+
+    // Constructing the WHERE condition
+    const validOptionIds = filteredOptions.map((option) => option.option_id);
+    const whereCondition = `${validOptionIds}`;
+
+    // Constructing the UPDATE query
+    await client.query(`
+      UPDATE options
+      SET option_text = (CASE ${setClause} END)
+      WHERE option_id IN (${whereCondition});
+    `);
+
+    // Insert new options
+    const optionsToInsert = options.filter((option) => !option.option_id);
+
+    if (optionsToInsert.length > 0) {
+      const insertValues = optionsToInsert
+        .map((option) => `('${option.option_text}', ${req.params.id})`)
+        .join(", ");
+
+      await client.query(
+        `INSERT INTO options (option_text, question_id) VALUES ${insertValues}`
+      );
+    }
+
+    // Mark options as deleted
+    const optionsToDelete = existingOptionIds.filter(
+      (optionId) => !options.some((option) => option.option_id === optionId)
+    );
+
+    if (optionsToDelete.length > 0) {
+      const optionsToDeleteStr = optionsToDelete.join(", ");
+
+      await client.query(
+        `UPDATE options
+            SET isDeleted = true
+            WHERE option_id IN (${optionsToDeleteStr}) AND question_id = $1;`,
+        [req.params.id]
+      );
+
+      await client.query(
+        `UPDATE user_responses
+            SET isDeleted = true
+            WHERE option_id IN (${optionsToDeleteStr});
+          `
+      );
+    }
+
     // Update question text
     await client.query(
       `UPDATE questions SET question_text = $1 WHERE question_id = $2`,
       [question_text, req.params.id]
     );
-
-    const existingOptions = await client.query(
-      "SELECT option_id FROM options WHERE question_id = $1",
-      [req.params.id]
-    );
-    const existingOptionIds = existingOptions.rows.map((row) => row.option_id);
-
-    // Update existing options and insert new options
-    for (const option of options) {
-      if (option.option_id) {
-        // Check if the option_id exists for the specified question
-        if (!existingOptionIds.includes(option.option_id)) {
-          return res.status(400).json({
-            success: false,
-            message: `OptionId dose not exist.`,
-          });
-        }
-
-        // Update existing option for the specified question
-        await client.query(
-          "UPDATE options SET option_text = $1 WHERE option_id = $2 AND question_id = $3",
-          [option.option_text, option.option_id, req.params.id]
-        );
-      } else {
-        // Store new option
-        await client.query(
-          "INSERT INTO options (option_text, question_id) VALUES ($1, $2)",
-          [option.option_text, req.params.id]
-        );
-      }
-    }
-
-    // Delete options not present in the payload
-    const optionsToDelete = existingOptionIds.filter(
-      (optionId) => !options.some((option) => option.option_id === optionId)
-    );
-    for (const optionId of optionsToDelete) {
-      await client.query(
-        `UPDATE options
-        SET isDeleted = true
-        WHERE option_id = $1 AND question_id = $2;`,
-        [optionId, req.params.id]
-      );
-
-      await client.query(
-        `
-        UPDATE user_responses
-        SET isDeleted = true
-        WHERE option_id = $1
-        `,
-        [optionId]
-      );
-    }
 
     res.status(200).json({
       success: true,
@@ -230,50 +254,48 @@ const deleteQuestion = async (req, res) => {
       .json({ success: true, message: "Question deleted successfully." });
   } catch (error) {
     console.log("Error >>", error);
-    res.status(400).json({ success: false, message: error });
+    res.status(400).json({ success: false, message: "Something went wrong." });
   }
 };
 
 const listQuestion = async (req, res) => {
   try {
-    const result = await client.query(`
-      SELECT q.question_id, q.question_text, o.option_id , o.option_text
+    let { limit, page } = req.query;
+
+    // Ensure limit and page are integers with default values
+    limit = parseInt(limit) || 10;
+    page = parseInt(page) || 1;
+
+    const offset = (page - 1) * limit;
+
+    // Fetch questions and their options with pagination
+    const result = await client.query(
+      `
+      SELECT q.question_id, q.question_text, 
+        COALESCE(
+          json_agg(
+            json_build_object('option_id', o.option_id, 'option_text', o.option_text)
+            ORDER BY o.option_id
+          ) FILTER (WHERE o.option_id IS NOT NULL), '[]'
+        ) AS options
       FROM questions q
       LEFT JOIN options o ON q.question_id = o.question_id AND o.isDeleted = false
       WHERE q.isDeleted = false
+      GROUP BY q.question_id
       ORDER BY q.question_id ASC
-    `);
-
-    const questionGroup = [];
-    let currentQuestion = null;
-
-    result.rows.forEach((row) => {
-      if (!currentQuestion || currentQuestion.question_id !== row.question_id) {
-        // If the current question is different from the previous one,
-        // create a new question object
-        currentQuestion = {
-          question_id: row.question_id,
-          question_text: row.question_text,
-          options: [],
-        };
-        // Add the question object to the questionGroup array
-        questionGroup.push(currentQuestion);
-      }
-      // Add option to the current question's options array
-      currentQuestion.options.push({
-        option_id: row.option_id,
-        option_text: row.option_text,
-      });
-    });
+      LIMIT $1 OFFSET $2;
+      `,
+      [limit, offset]
+    );
 
     res.status(200).json({
       success: true,
       message: "Questions listed successfully.",
-      data: questionGroup,
+      data: result.rows,
     });
   } catch (error) {
     console.log("Error >>", error);
-    res.status(400).json({ success: false, message: error });
+    res.status(400).json({ success: false, message: "Something went wrong." });
   }
 };
 
@@ -298,34 +320,47 @@ const submitResponse = async (req, res) => {
         .json({ success: false, message: "Question not found." });
     }
 
-    for (const optionId of priority) {
-      const optionExists = await client.query(
-        `SELECT * FROM options WHERE option_id = $1 AND question_id = $2`,
-        [optionId, questionId]
-      );
+    // Check if question exists
+    const userExists = await client.query(
+      `SELECT * FROM users WHERE user_id = $1`,
+      [userId]
+    );
 
-      if (optionExists.rows.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: `OptionId dose not exist.`,
-        });
-      }
+    if (userExists.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found." });
     }
 
-    for (let i = 0; i < priority.length; i++) {
-      const optionId = priority[i];
-      const priorityValue = i + 1;
+    // Check if question exists
+    const optionExist = await client.query(
+      `SELECT option_id 
+        FROM options 
+        WHERE option_id IN (${priority.join(",")}) AND question_id = $1`,
+      [questionId]
+    );
 
-      // Insert priority into the database
-      await client.query(
-        "INSERT INTO user_responses(question_id, option_id, user_id, priority) VALUES ($1, $2, $3, $4)",
-        [questionId, optionId, userId, priorityValue]
-      );
+    if (optionExist.rows.length !== priority.length) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Option not found." });
     }
+
+    const priorityValuesString = priority
+      .map(
+        (optionId, index) =>
+          `(${questionId}, ${optionId}, ${userId}, ${index + 1})`
+      )
+      .join(", ");
+
+    await client.query(`
+      INSERT INTO user_responses (question_id, option_id, user_id, priority)
+      VALUES ${priorityValuesString};
+    `);
 
     res.status(200).json({
       success: true,
-      message: "User response store Successfully.",
+      message: "Report submit Successfully.",
     });
   } catch (error) {
     console.log("error >>", error);
@@ -348,36 +383,42 @@ const finalReport = async (req, res) => {
 
     const questions = questionsResult.rows;
 
+    // Fetch all responses for the questions
+    const questionIds = questions.map((q) => q.question_id);
+    const responsesResult = await client.query(
+      `
+      SELECT *
+      FROM user_responses
+      WHERE question_id = ANY($1::int[])
+      AND priority = 1 AND isDeleted = false;
+      `,
+      [questionIds]
+    );
+
+    const responses = responsesResult.rows;
+
     const reports = [];
 
-    // Iterate through each question
-    for (const question of questions) {
+    // Process each question
+    questions.forEach((question) => {
       const questionId = question.question_id;
       const optionTexts = question.option_text.split(", ");
-      const optionIds = question.option_ids.map((id) => parseInt(id)); // Convert option_ids to integers
+      const optionIds = question.option_ids.map((id) => parseInt(id));
 
-      // Fetch responses for the current question
-      const responsesResult = await client.query(
-        `
-        SELECT *
-        FROM user_responses
-        WHERE question_id = $1
-        AND priority = 1 AND isDeleted = false;
-        `,
-        [questionId]
+      // Filter responses for the current question
+      const filteredResponses = responses.filter(
+        (response) => response.question_id === questionId
       );
 
-      const responses = responsesResult.rows;
-
       // Total number of users who responded to this question
-      const totalCount = responses.length;
+      const totalCount = filteredResponses.length;
 
       // Create a map to store the count of each option
       const optionCounts = {};
 
       // Calculate the count of each option
-      responses.forEach((row) => {
-        const optionId = row.option_id;
+      filteredResponses.forEach((response) => {
+        const optionId = response.option_id;
         optionCounts[optionId] = (optionCounts[optionId] || 0) + 1;
       });
 
@@ -398,7 +439,7 @@ const finalReport = async (req, res) => {
         totalUserCount: totalCount,
         option_percentages: optionPercentages,
       });
-    }
+    });
 
     res.status(200).json({
       success: true,
@@ -407,7 +448,7 @@ const finalReport = async (req, res) => {
     });
   } catch (error) {
     console.log("error >>", error);
-    res.status(400).json({ success: false, message: error.message });
+    res.status(400).json({ success: false, message: "Something went wrong." });
   }
 };
 
