@@ -6,12 +6,10 @@ const createUser = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: errors.array().map((error) => error.msg),
-        });
+      return res.status(400).json({
+        success: false,
+        message: errors.array().map((error) => error.msg),
+      });
     }
 
     const { userName, email, password } = req.body;
@@ -373,15 +371,24 @@ const finalReport = async (req, res) => {
     // Fetch all questions and their options
     const questionsResult = await client.query(
       `
-      SELECT q.question_id, string_agg(o.option_text, ', ') AS option_text, array_agg(o.option_id) AS option_ids
+      SELECT q.question_id, q.question_text, string_agg(o.option_text, ', ') AS option_text, array_agg(o.option_id) AS option_ids
       FROM questions AS q
       LEFT JOIN options AS o ON q.question_id = o.question_id
       WHERE q.isDeleted = false AND o.isDeleted = false
-      GROUP BY q.question_id;
+      GROUP BY q.question_id, q.question_text;
       `
     );
 
     const questions = questionsResult.rows;
+
+    // Group questions by question_text
+    const groupedQuestions = questions.reduce((acc, question) => {
+      if (!acc[question.question_text]) {
+        acc[question.question_text] = [];
+      }
+      acc[question.question_text].push(question);
+      return acc;
+    }, {});
 
     // Fetch all responses for the questions
     const questionIds = questions.map((q) => q.question_id);
@@ -399,47 +406,60 @@ const finalReport = async (req, res) => {
 
     const reports = [];
 
-    // Process each question
-    questions.forEach((question) => {
-      const questionId = question.question_id;
-      const optionTexts = question.option_text.split(", ");
-      const optionIds = question.option_ids.map((id) => parseInt(id));
+    // Process each group of questions with the same question_text
+    for (const questionText in groupedQuestions) {
+      const questionsGroup = groupedQuestions[questionText];
 
-      // Filter responses for the current question
-      const filteredResponses = responses.filter(
-        (response) => response.question_id === questionId
-      );
+      // Combine options and responses for the group
+      const combinedOptions = {};
+      let combinedResponses = [];
 
-      // Total number of users who responded to this question
-      const totalCount = filteredResponses.length;
+      questionsGroup.forEach((question) => {
+        const optionTexts = question.option_text.split(", ");
+        question.option_ids.forEach((optionId, index) => {
+          if (!combinedOptions[optionId]) {
+            combinedOptions[optionId] = optionTexts[index];
+          }
+        });
+        combinedResponses = combinedResponses.concat(
+          responses.filter(
+            (response) => response.question_id === question.question_id
+          )
+        );
+      });
+
+      // Total number of users who responded to this group of questions
+      const totalCount = combinedResponses.length;
 
       // Create a map to store the count of each option
       const optionCounts = {};
 
       // Calculate the count of each option
-      filteredResponses.forEach((response) => {
+      combinedResponses.forEach((response) => {
         const optionId = response.option_id;
         optionCounts[optionId] = (optionCounts[optionId] || 0) + 1;
       });
 
       // Calculate percentage ratios for each option
-      const optionPercentages = optionIds.map((optionId, index) => ({
-        option_id: optionId,
-        option_text: optionTexts[index],
-        userCount: optionCounts[optionId] || 0,
-        percentage:
-          totalCount > 0
-            ? ((optionCounts[optionId] || 0) / totalCount) * 100
-            : 0,
-      }));
+      const optionPercentages = Object.keys(combinedOptions).map(
+        (optionId) => ({
+          option_id: parseInt(optionId),
+          option_text: combinedOptions[optionId],
+          userCount: optionCounts[optionId] || 0,
+          percentage:
+            totalCount > 0
+              ? ((optionCounts[optionId] || 0) / totalCount) * 100
+              : 0,
+        })
+      );
 
-      // Push report for the current question to the reports array
+      // Push report for the current group of questions to the reports array
       reports.push({
-        questionId: questionId,
+        questionText: questionText,
         totalUserCount: totalCount,
         option_percentages: optionPercentages,
       });
-    });
+    }
 
     res.status(200).json({
       success: true,
